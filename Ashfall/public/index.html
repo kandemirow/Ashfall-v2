@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0a0710" />
+  <title>ASHFALL LEGION — online co-op survivors</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ====================== GAME CANVAS ====================== -->
+  <canvas id="game"></canvas>
+
+  <!-- ====================== HUD ====================== -->
+  <div id="hud" class="hidden">
+    <div id="hud-top">
+      <div class="hud-pill"><span class="lbl">TIME</span><span id="hud-time">0:00</span></div>
+      <div class="hud-pill"><span class="lbl">PLAYERS</span><span id="hud-players">0/0</span></div>
+      <div class="hud-pill"><span class="lbl">PING</span><span id="hud-ping">--</span></div>
+      <div class="hud-pill" id="fps-pill"><span class="lbl">FPS</span><span id="hud-fps">--</span></div>
+    </div>
+
+    <div id="leaderboard">
+      <div class="lb-col">
+        <div class="lb-title">KILLS</div>
+        <ol id="lb-kills"></ol>
+      </div>
+      <div class="lb-col">
+        <div class="lb-title">LEVEL</div>
+        <ol id="lb-level"></ol>
+      </div>
+    </div>
+
+    <div id="hud-bottom">
+      <div id="loadout">
+        <div id="weapon-row" class="slot-row"></div>
+        <div id="passive-row" class="slot-row"></div>
+      </div>
+      <div id="vitals">
+        <div class="vital-stats">
+          <span id="hud-name">—</span>
+          <span class="dot">•</span>
+          <span>Lv <b id="hud-level">1</b></span>
+          <span class="dot">•</span>
+          <span>☠ <b id="hud-kills">0</b></span>
+          <span class="dot">•</span>
+          <span>◈ <b id="hud-gold">0</b></span>
+        </div>
+        <div class="bar hp-bar"><div id="hp-fill"></div><span id="hp-text"></span></div>
+        <div class="bar xp-bar"><div id="xp-fill"></div></div>
+      </div>
+    </div>
+
+    <button id="mute-btn" class="corner-btn" title="Toggle sound">♪</button>
+    <button id="lowfx-btn" class="corner-btn" title="Toggle low FX">✦</button>
+  </div>
+
+  <!-- ====================== LEVEL UP OVERLAY ====================== -->
+  <div id="levelup" class="overlay hidden">
+    <div class="lvl-panel">
+      <div class="lvl-head">LEVEL UP</div>
+      <div id="lvl-cards" class="cards"></div>
+      <div class="lvl-hint">Click a card &nbsp;·&nbsp; you keep moving while choosing</div>
+    </div>
+  </div>
+
+  <!-- ====================== DEATH / SPECTATE OVERLAY ====================== -->
+  <div id="death" class="overlay hidden">
+    <div class="death-panel">
+      <div class="death-title">YOU FELL</div>
+      <p id="death-sub">Stay near a living ally to be revived.</p>
+      <div class="revive-bar"><div id="revive-fill"></div></div>
+      <p id="death-rev">Revives left: 3</p>
+      <p class="death-small">Spectating the battlefield…</p>
+    </div>
+  </div>
+
+  <!-- ====================== GAME OVER OVERLAY ====================== -->
+  <div id="gameover" class="overlay hidden">
+    <div class="over-panel">
+      <div id="over-title">RUN OVER</div>
+      <p id="over-sub"></p>
+      <p class="death-small">A new run begins shortly…</p>
+    </div>
+  </div>
+
+  <!-- ====================== MAIN MENU ====================== -->
+  <div id="menu" class="overlay">
+    <div class="menu-panel">
+      <h1 class="logo">ASHFALL<span>LEGION</span></h1>
+      <p class="tagline">Online co-op survivors · move, survive, evolve · 20–100 players</p>
+
+      <label class="field-label">YOUR NAME</label>
+      <input id="name-input" maxlength="16" placeholder="Enter name (max 16)" autocomplete="off" />
+
+      <label class="field-label">CHOOSE A CHAMPION</label>
+      <div id="char-select" class="char-grid"></div>
+
+      <button id="play-btn" disabled>CONNECT &amp; PLAY</button>
+      <div id="conn-status" class="conn">Not connected</div>
+
+      <div class="info-cols">
+        <div>
+          <h3>HOW TO PLAY</h3>
+          <p>Enemies swarm endlessly. Your attacks fire automatically — you only move. Collect XP shards, level up, pick upgrades, and combine a maxed weapon with the right passive to evolve it from a boss chest.</p>
+        </div>
+        <div>
+          <h3>CONTROLS</h3>
+          <p><b>WASD / Arrows</b> — move<br/><b>Mouse / tap</b> — menu &amp; upgrade picks<br/><b>Esc</b> — release controls<br/>Mobile: drag the on-screen stick.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================== MOBILE JOYSTICK ====================== -->
+  <div id="stick" class="hidden"><div id="stick-knob"></div></div>
+
+  <!-- ====================== TOASTS ====================== -->
+  <div id="toast" class="hidden"></div>
+
+  <script src="client.js"></script>
+</body>
+</html>
