@@ -55,14 +55,19 @@
     <button id="lowfx-btn" class="corner-btn" title="Toggle low FX">✦</button>
   </div>
 
-  <!-- ====================== LEVEL UP OVERLAY ====================== -->
-  <div id="levelup" class="overlay hidden">
+  <!-- ====================== LEVEL UP (bottom dock) ====================== -->
+  <div id="levelup" class="hidden">
     <div class="lvl-panel">
-      <div class="lvl-head">LEVEL UP</div>
+      <div class="lvl-bar">
+        <span class="lvl-head">LEVEL UP</span>
+        <span id="lvl-queue" class="lvl-queue hidden"></span>
+        <button id="lvl-bank" class="lvl-bank">Bank for later ▾</button>
+      </div>
       <div id="lvl-cards" class="cards"></div>
-      <div class="lvl-hint">Click a card &nbsp;·&nbsp; you keep moving while choosing</div>
+      <div class="lvl-hint">Tap a card to take it · you keep moving · bank to decide later</div>
     </div>
   </div>
+  <button id="lvl-reopen" class="hidden"></button>
 
   <!-- ====================== DEATH / SPECTATE OVERLAY ====================== -->
   <div id="death" class="overlay hidden">
