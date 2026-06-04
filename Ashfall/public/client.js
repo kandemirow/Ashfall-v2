@@ -679,11 +679,18 @@ function drawEnemy(e, x, y) {
   else if (st.shape === 'square') { ctx.fillRect(-r, -r, r * 2, r * 2); }
   else { ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r, r); ctx.lineTo(-r, r); ctx.closePath(); ctx.fill(); }
   ctx.globalAlpha = 1; ctx.shadowBlur = 0;
-  // boss hp bar
+  // boss hp bar (always once a boss exists)
   if ((e.f & 1) && e.H) {
     const w = r * 2.4, ratio = Math.max(0, e.h / e.H);
     ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(-w / 2, -r - 14, w, 6);
     ctx.fillStyle = '#d63a4f'; ctx.fillRect(-w / 2, -r - 14, w * ratio, 6);
+  } else if ((e.f & 4) && e.H) {
+    // regular enemy: bar only appears after it has taken damage
+    const ratio = Math.max(0, Math.min(1, e.h / e.H));
+    const w = Math.max(20, r * 2.1), h = 3, yy = -r - 7;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(-w / 2, yy, w, h);
+    ctx.fillStyle = ratio > 0.5 ? '#6fe09a' : (ratio > 0.25 ? '#ffd86b' : '#ff5470');
+    ctx.fillRect(-w / 2, yy, w * ratio, h);
   }
   ctx.restore();
 }
