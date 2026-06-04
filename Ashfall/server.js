@@ -405,7 +405,7 @@ function fireWeapons(p, enemyGrid) {
           if (e.dead) continue;
           const dx = e.x - p.x, dy = e.y - p.y;
           if (dx * dx + dy * dy < (radius + e.r) * (radius + e.r)) {
-            damageEnemy(e, dmg, p, true);
+            damageEnemy(e, dmg, p, true, true);
           }
         }
       }
@@ -502,7 +502,7 @@ function updateProjectiles(enemyGrid) {
       if (e.dead || pr.hit.has(e.id)) continue;
       const dx = e.x - pr.x, dy = e.y - pr.y;
       if (dx * dx + dy * dy < (e.r + 10) * (e.r + 10)) {
-        damageEnemy(e, pr.dmg, owner, true);
+        damageEnemy(e, pr.dmg, owner, true, true);
         pr.hit.add(e.id);
         if (pr.splash > 0) {
           const sp = [];
@@ -511,7 +511,7 @@ function updateProjectiles(enemyGrid) {
             const se = sp[k];
             if (se.dead || se.id === e.id) continue;
             const sdx = se.x - pr.x, sdy = se.y - pr.y;
-            if (sdx * sdx + sdy * sdy < pr.splash * pr.splash) damageEnemy(se, pr.dmg * 0.6, owner, false);
+            if (sdx * sdx + sdy * sdy < pr.splash * pr.splash) damageEnemy(se, pr.dmg * 0.6, owner, false, true);
           }
           pushEvent('boom', pr.x, pr.y, { r: pr.splash });
         }
@@ -550,6 +550,8 @@ function spawnEnemy(type, x, y, isBoss) {
     speed: def.speed, r: def.r, dmg: def.dmg, xp: def.xp,
     target: 0, retargetCd: Math.random() * 1.5,
     atkCd: 0, slow: 0, slowT: 0, burn: 0, burnT: 0,
+    kbx: 0, kby: 0,            // knockback velocity (decays)
+    hurt: false,               // has taken damage? (controls health bar)
     // behavior flags
     explode: def.explode || 0,
     ranged: !!def.ranged, flee: !!def.flee,
@@ -613,6 +615,14 @@ function updateEnemies(enemyGrid) {
     // slow timer
     let spd = e.speed;
     if (e.slowT > 0) { e.slowT -= DT; spd *= (1 - e.slow); }
+
+    // knockback impulse (decays fast) — gives hits a sense of weight
+    if (e.kbx || e.kby) {
+      e.x = clamp(e.x + e.kbx * DT, e.r, CONFIG.WORLD.w - e.r);
+      e.y = clamp(e.y + e.kby * DT, e.r, CONFIG.WORLD.h - e.r);
+      e.kbx *= 0.78; e.kby *= 0.78;
+      if (Math.abs(e.kbx) < 2 && Math.abs(e.kby) < 2) { e.kbx = 0; e.kby = 0; }
+    }
 
     // retarget occasionally; distribute across players
     e.retargetCd -= DT;
@@ -749,10 +759,21 @@ function fireBossPattern(e, tgt, dx, dy, d) {
   }
 }
 
-function damageEnemy(e, dmg, byPlayer, countCredit) {
+function damageEnemy(e, dmg, byPlayer, countCredit, knock) {
   if (e.dead) return;
   e.hp -= dmg;
+  e.hurt = true; // reveal health bar from first hit until death
   if (byPlayer && countCredit) e.lastHitBy = byPlayer.id;
+  // knockback on impactful (discrete) hits; smaller enemies fly further, bosses resist
+  if (knock && byPlayer && !e.boss) {
+    const dx = e.x - byPlayer.x, dy = e.y - byPlayer.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const force = 120 * (14 / e.r);   // inverse of radius -> small enemies get shoved more
+    e.kbx += (dx / d) * force;
+    e.kby += (dy / d) * force;
+    const k = Math.hypot(e.kbx, e.kby);
+    if (k > 360) { e.kbx = e.kbx / k * 360; e.kby = e.kby / k * 360; } // cap
+  }
   if (e.hp <= 0) killEnemy(e, byPlayer);
 }
 
@@ -886,7 +907,7 @@ function collectPickup(p, g) {
       const grid = makeGrid();
       for (const e of world.enemies.values()) if (!e.dead) gridInsert(grid, e);
       const near = []; gridQuery(grid, p.x, p.y, 350, near);
-      for (let i = 0; i < near.length; i++) damageEnemy(near[i], 400, p, false);
+      for (let i = 0; i < near.length; i++) damageEnemy(near[i], 400, p, false, true);
       pushEvent('boom', p.x, p.y, { r: 350 });
       break;
     }
@@ -1273,6 +1294,7 @@ function snapshotFor(p) {
     if (e.boss || dx * dx + dy * dy < R2) {
       const o = { i: e.id, x: Math.round(e.x), y: Math.round(e.y), t: e.type, f: 0 };
       if (e.boss) { o.f |= 1; o.h = Math.round(e.hp); o.H = Math.round(e.maxHp); }
+      else if (e.hurt) { o.f |= 4; o.h = Math.round(e.hp); o.H = Math.round(e.maxHp); }
       if (e.slowT > 0) o.f |= 2;
       enemies.push(o);
     }
