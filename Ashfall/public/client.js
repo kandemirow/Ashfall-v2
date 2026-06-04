@@ -23,6 +23,9 @@ const ENEMY_STYLE = {
   wraith: { c: '#9fd0ff', r: 14, shape: 'circle', ghost: true },
   crawl:  { c: '#c9b06f', r: 9,  shape: 'tri' },
   elite:  { c: '#ff8a5c', r: 28, shape: 'square' },
+  bomber: { c: '#ff7a45', r: 16, shape: 'circle' },
+  shooter:{ c: '#c97aff', r: 15, shape: 'square' },
+  runner: { c: '#ffd86b', r: 14, shape: 'tri' },
   batlord:    { c: '#9b6fff', r: 50, shape: 'tri',    boss: true },
   graveknight:{ c: '#cfd2d6', r: 58, shape: 'square', boss: true },
   crimson:    { c: '#ff5470', r: 54, shape: 'circle', boss: true, ghost: true },
@@ -40,7 +43,7 @@ const PASSIVE_ICON = {
 /* ---------------------- state ---------------------- */
 let ws = null;
 let myId = 0, spectator = false;
-let chars = null, weaponDefs = null, passiveDefs = null;
+let chars = null, weaponDefs = null, passiveDefs = null, evoDefs = {};
 let viewRadius = 950, worldSize = { w: 6000, h: 6000 };
 
 let selectedChar = null;
@@ -179,6 +182,7 @@ function handleMessage(m) {
     case 'welcome':
       myId = m.id; spectator = m.spectator;
       chars = m.chars; weaponDefs = m.weapons; passiveDefs = m.passives;
+      evoDefs = m.evolutions || {};
       viewRadius = m.view; worldSize = m.world;
       connected = true; controlsActive = !spectator;
       menuEl.classList.add('hidden'); hudEl.classList.remove('hidden');
@@ -189,7 +193,7 @@ function handleMessage(m) {
       onSnapshot(m);
       break;
     case 'lvl':
-      showLevelUp(m.opts);
+      updateLevelUI(m.opts, m.pending || 0);
       break;
     case 'died':
       Sound.death(); deathEl.classList.remove('hidden');
@@ -204,7 +208,7 @@ function handleMessage(m) {
       Sound.evolve(); toast('EVOLUTION: ' + m.name);
       break;
     case 'boss':
-      toast('⚔ ' + m.name + ' has risen!');
+      toast('⚔ ' + m.name);
       break;
     case 'over':
       showGameOver(m.reason);
@@ -338,14 +342,60 @@ function onTouchEnd(e) {
 /* settings buttons */
 $('mute-btn').onclick = (e) => { muted = !muted; e.target.classList.toggle('off', muted); };
 $('lowfx-btn').onclick = (e) => { lowFx = !lowFx; e.target.classList.toggle('off', lowFx); };
+$('lvl-bank').onclick = (e) => { e.stopPropagation(); bankLevelUp(); };
+$('lvl-reopen').onclick = (e) => { e.stopPropagation(); reopenLevelUp(); };
 
 /* =====================================================================
  * LEVEL UP UI
  * ===================================================================== */
-function showLevelUp(opts) {
+/* ---------------------- LEVEL-UP: bottom dock with banking ---------------------- */
+let lvlOpts = null;      // current option set (front of server queue)
+let lvlPending = 0;      // total level-ups waiting (shown + banked)
+let lvlBanked = false;   // player chose to bank and hide the panel
+
+function evolveHint(o) {
+  // For weapon cards, show what passive evolves them (readability boost)
+  if ((o.kind === 'wup' || o.kind === 'wnew') && evoDefs && evoDefs[o.wid]) {
+    const pid = evoDefs[o.wid].passive;
+    const pname = (passiveDefs && passiveDefs[pid] && passiveDefs[pid].name) || pid;
+    return `<div class="card-evo">★ Max + ${pname} → evolves</div>`;
+  }
+  return '';
+}
+
+function updateLevelUI(opts, pending) {
+  lvlPending = pending;
+  if (opts) lvlOpts = opts;
+
+  // badge that lets a banking player reopen the panel
+  const badge = $('lvl-reopen');
+  if (pending > 0) {
+    badge.textContent = '⬆ ' + pending + ' upgrade' + (pending > 1 ? 's' : '') + ' ready — tap';
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+
+  if (!opts || pending === 0) {
+    // nothing left to choose
+    levelupEl.classList.add('hidden');
+    lvlBanked = false;
+    lvlOpts = null;
+    return;
+  }
+
+  if (lvlBanked) {
+    // keep panel hidden, just leave the badge updated
+    return;
+  }
+  renderLevelCards();
   Sound.levelup();
+  flashLevelFx();
+}
+
+function renderLevelCards() {
   const wrap = $('lvl-cards'); wrap.innerHTML = '';
-  for (const o of opts) {
+  for (const o of lvlOpts) {
     const card = document.createElement('div');
     card.className = 'card';
     let icon = '◈';
@@ -357,22 +407,57 @@ function showLevelUp(opts) {
     card.innerHTML =
       `<div class="card-icon">${icon}</div>
        <div class="card-tag tag-${o.kind}">${tagText}</div>
-       <div class="card-name">${o.name}</div>
-       <div class="card-desc">${o.desc || ''}</div>`;
+       <div class="card-name">${o.name}${o.lv ? ' <span class="card-lv">Lv ' + o.lv + '</span>' : ''}</div>
+       <div class="card-desc">${o.desc || ''}</div>
+       ${evolveHint(o)}`;
     card.onclick = () => {
       send({ t: 'pick', id: o.id });
-      levelupEl.classList.add('hidden');
+      // server will push the next state (more cards or clear); no manual hide
     };
     wrap.appendChild(card);
   }
+  // pending badge inside the panel
+  const q = $('lvl-queue');
+  if (lvlPending > 1) { q.textContent = '+' + (lvlPending - 1) + ' more queued'; q.classList.remove('hidden'); }
+  else q.classList.add('hidden');
+
   levelupEl.classList.remove('hidden');
 }
+
+function bankLevelUp() {
+  lvlBanked = true;
+  levelupEl.classList.add('hidden');
+  // badge already reflects pending count
+}
+
+function reopenLevelUp() {
+  if (!lvlOpts || lvlPending === 0) return;
+  lvlBanked = false;
+  renderLevelCards();
+}
+
+// brief screen-edge glow + shake hint so a new level-up grabs attention
+let levelFx = 0;
+function flashLevelFx() { levelFx = 0.6; }
+
 
 function showGameOver(reason) {
   $('over-title').textContent = reason === 'survived' ? 'YOU SURVIVED' : 'LEGION FALLEN';
   $('over-sub').textContent = reason === 'survived'
     ? 'The Ashfall could not consume you.'
     : 'The whole legion was overwhelmed.';
+  // team summary from the latest leaderboard snapshot
+  const lb = curSnap && curSnap.lb;
+  const sub = $('over-sub');
+  if (lb && (lb.k && lb.k.length)) {
+    const topKill = lb.k[0], topLvl = (lb.l && lb.l[0]) || topKill;
+    let extra = document.getElementById('over-summary');
+    if (!extra) { extra = document.createElement('div'); extra.id = 'over-summary'; extra.className = 'over-summary'; sub.parentNode.insertBefore(extra, sub.nextSibling); }
+    extra.innerHTML =
+      `<div>🏆 Most kills: <b>${topKill.n}</b> (${topKill.k})</div>` +
+      `<div>⭐ Highest level: <b>${topLvl.n}</b> (Lv ${topLvl.l})</div>` +
+      `<div>⏱ Survived: <b>${fmtTime(curSnap.tm || 0)}</b></div>`;
+  }
   gameoverEl.classList.remove('hidden');
 }
 
@@ -447,17 +532,95 @@ function render(alpha, dt) {
 
   // gems
   lerpEntities(prevSnap.G, curSnap.G, alpha, drawGem);
-  // chests
+  // chests / anvils
   if (curSnap.C) for (const c of curSnap.C) drawChest(c.x, c.y);
   // enemies
   lerpEntities(prevSnap.E, curSnap.E, alpha, drawEnemy);
-  // projectiles
+  // enemy projectiles (boss / hexer bullets)
+  lerpEntities(prevSnap.S, curSnap.S, alpha, drawEnemyShot);
+  // player projectiles
   lerpEntities(prevSnap.R, curSnap.R, alpha, drawProjectile);
   // players (others + self)
   lerpEntities(prevSnap.P, curSnap.P, alpha, drawPlayer);
   // effects on top
   drawEffects(dt);
 
+  ctx.restore();
+
+  // screen-space overlays (CSS-pixel coords; scale by DPR so they sit correctly)
+  ctx.save();
+  ctx.scale(DPR, DPR);
+  drawOffscreenArrows(vw, vh, mx, my);
+  drawMinimap(vw, vh, mx, my);
+  drawLevelEdgeGlow(vw, vh, dt);
+  ctx.restore();
+}
+
+// Yellow bullet for enemy shots
+function drawEnemyShot(s, x, y) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = s.c || '#ff5470';
+  ctx.shadowColor = s.c || '#ff5470'; ctx.shadowBlur = lowFx ? 0 : 8;
+  ctx.beginPath(); ctx.arc(0, 0, s.r || 7, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+// Edge arrows pointing to off-screen bosses, anvils, and allies
+function drawOffscreenArrows(vw, vh, mx, my) {
+  const cx = vw / 2, cy = vh / 2, margin = 46;
+  const pts = [];
+  if (curSnap.E) for (const e of curSnap.E) { if (e.f & 1) pts.push({ x: e.x, y: e.y, c: '#ff5470', label: 'BOSS' }); }
+  if (curSnap.C) for (const c of curSnap.C) pts.push({ x: c.x, y: c.y, c: '#e8c873', label: 'ANVIL' });
+  if (curSnap.P) for (const p of curSnap.P) { if (p.i !== myId && !p.d) pts.push({ x: p.x, y: p.y, c: 'rgba(150,200,160,0.8)', label: '' }); }
+
+  ctx.save();
+  ctx.font = 'bold 10px Inter, system-ui, sans-serif'; ctx.textAlign = 'center';
+  for (const pt of pts) {
+    const sx = cx + (pt.x - mx), sy = cy + (pt.y - my);
+    if (sx > margin && sx < vw - margin && sy > margin && sy < vh - margin) continue; // on screen
+    const ang = Math.atan2(pt.y - my, pt.x - mx);
+    const ex = cx + Math.cos(ang) * (Math.min(vw, vh) / 2 - margin);
+    const ey = cy + Math.sin(ang) * (Math.min(vw, vh) / 2 - margin);
+    ctx.save(); ctx.translate(ex, ey); ctx.rotate(ang);
+    ctx.fillStyle = pt.c; ctx.shadowColor = pt.c; ctx.shadowBlur = lowFx ? 0 : 8;
+    ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(-8, -7); ctx.lineTo(-8, 7); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    if (pt.label) { ctx.fillStyle = pt.c; ctx.fillText(pt.label, ex, ey - 12); }
+  }
+  ctx.restore();
+}
+
+// Small corner minimap of the whole world with dots
+function drawMinimap(vw, vh, mx, my) {
+  const size = Math.min(150, vw * 0.26);
+  const pad = 12, x0 = vw - size - pad, y0 = vh - size - pad;
+  const ws = worldSize || { w: 6000, h: 6000 };
+  const sx = size / ws.w, sy = size / ws.h;
+  ctx.save();
+  ctx.globalAlpha = 0.82;
+  ctx.fillStyle = 'rgba(10,7,16,0.7)';
+  ctx.strokeStyle = 'rgba(185,140,255,0.35)'; ctx.lineWidth = 1.5;
+  ctx.fillRect(x0, y0, size, size); ctx.strokeRect(x0, y0, size, size);
+  const dot = (wx, wy, c, r) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x0 + wx * sx, y0 + wy * sy, r, 0, 7); ctx.fill(); };
+  if (curSnap.C) for (const c of curSnap.C) dot(c.x, c.y, '#e8c873', 3);
+  if (curSnap.E) for (const e of curSnap.E) { if (e.f & 1) dot(e.x, e.y, '#ff5470', 3.5); }
+  if (curSnap.P) for (const p of curSnap.P) { if (!p.d) dot(p.x, p.y, p.i === myId ? '#fff7d8' : '#8fd6a0', p.i === myId ? 3.5 : 2.5); }
+  ctx.restore();
+}
+
+// Pulsing edge glow when a new level-up is available
+function drawLevelEdgeGlow(vw, vh, dt) {
+  if (levelFx > 0) levelFx = Math.max(0, levelFx - dt);
+  const persist = (lvlPending > 0) ? 0.18 : 0;
+  const a = Math.max(persist, levelFx) ;
+  if (a <= 0) return;
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 180);
+  ctx.save();
+  const g = ctx.createLinearGradient(0, 0, 0, vh);
+  const col = `rgba(232,200,115,${(a * (0.4 + 0.6 * pulse)).toFixed(3)})`;
+  g.addColorStop(0, col); g.addColorStop(0.12, 'rgba(0,0,0,0)');
+  g.addColorStop(0.88, 'rgba(0,0,0,0)'); g.addColorStop(1, col);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, vw, vh);
   ctx.restore();
 }
 
