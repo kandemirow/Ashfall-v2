@@ -113,6 +113,10 @@ const ENEMIES = {
   wraith: { name: 'Wraith',      hp: 24,  speed: 150, r: 14, dmg: 8,  xp: 2, color: '#9fd0ff' },
   crawl:  { name: 'Crawler',     hp: 10,  speed: 120, r: 9,  dmg: 5,  xp: 1, color: '#c9b06f' },
   elite:  { name: 'Elite Brute', hp: 240, speed: 80,  r: 28, dmg: 24, xp: 6, color: '#ff8a5c' },
+  // variety types
+  bomber: { name: 'Bomber',      hp: 40,  speed: 95,  r: 16, dmg: 10, xp: 2, color: '#ff7a45', explode: 36 }, // AoE on death
+  shooter:{ name: 'Hexer',       hp: 34,  speed: 70,  r: 15, dmg: 8,  xp: 2, color: '#c97aff', ranged: true }, // fires slow bolts
+  runner: { name: 'Gold Runner', hp: 120, speed: 230, r: 14, dmg: 0,  xp: 3, color: '#ffd86b', flee: true }, // treasure event, flees
 };
 
 const BOSSES = {
@@ -140,23 +144,27 @@ const world = {
   players: new Map(),     // sockId -> player
   enemies: new Map(),     // id -> enemy
   gems: new Map(),        // id -> gem
-  projectiles: new Map(), // id -> projectile
-  chests: new Map(),      // id -> chest
+  projectiles: new Map(), // id -> projectile (player)
+  enemyShots: new Map(),  // id -> enemy projectile (bosses / shooters)
+  chests: new Map(),      // id -> chest (boss Anvil)
   events: [],             // transient visual events for this snapshot
   time: 0,                // elapsed run seconds
   running: false,
   gameOverAt: 0,
+  eventCd: 35,            // seconds until next special event (treasure runner)
 };
 
 function resetWorld() {
   world.enemies.clear();
   world.gems.clear();
   world.projectiles.clear();
+  world.enemyShots.clear();
   world.chests.clear();
   world.events.length = 0;
   world.time = 0;
   world.running = false;
   world.gameOverAt = 0;
+  world.eventCd = 35;
   for (const b of BOSS_SCHEDULE) b.done = false;
   // respawn living players fresh at center
   for (const p of world.players.values()) respawnPlayer(p);
@@ -542,6 +550,11 @@ function spawnEnemy(type, x, y, isBoss) {
     speed: def.speed, r: def.r, dmg: def.dmg, xp: def.xp,
     target: 0, retargetCd: Math.random() * 1.5,
     atkCd: 0, slow: 0, slowT: 0, burn: 0, burnT: 0,
+    // behavior flags
+    explode: def.explode || 0,
+    ranged: !!def.ranged, flee: !!def.flee,
+    shootCd: isBoss ? 2.0 + Math.random() * 1.5 : (def.ranged ? 1.5 + Math.random() * 1.5 : 0),
+    bossKind: isBoss ? type : null,
     dead: false,
   };
   world.enemies.set(e.id, e);
@@ -571,7 +584,9 @@ function spawnWave() {
   const pool = [];
   pool.push('bat', 'ghoul', 'crawl');
   if (t > 60) pool.push('ghoul', 'wraith');
-  if (t > 180) pool.push('brute', 'wraith');
+  if (t > 120) pool.push('bomber');
+  if (t > 180) pool.push('brute', 'wraith', 'shooter');
+  if (t > 300) pool.push('bomber', 'shooter');
   if (t > 360) pool.push('brute', 'elite');
   if (t > 600) pool.push('elite', 'brute');
 
@@ -619,14 +634,42 @@ function updateEnemies(enemyGrid) {
     if (tgt && !tgt.dead) {
       const dx = tgt.x - e.x, dy = tgt.y - e.y;
       const d = Math.hypot(dx, dy) || 1;
-      e.x += (dx / d) * spd * DT;
-      e.y += (dy / d) * spd * DT;
 
-      // contact damage
-      e.atkCd -= DT;
-      if (d < e.r + 16 && e.atkCd <= 0) {
-        e.atkCd = CONFIG.CONTACT_DAMAGE_CD;
-        damagePlayer(tgt, e.dmg);
+      if (e.flee) {
+        // treasure runner: sprint away from the nearest player
+        e.x -= (dx / d) * spd * DT;
+        e.y -= (dy / d) * spd * DT;
+        e.x = clamp(e.x, e.r, CONFIG.WORLD.w - e.r);
+        e.y = clamp(e.y, e.r, CONFIG.WORLD.h - e.r);
+      } else if (e.ranged) {
+        // hexer: keep medium distance, fire slow bolts at target
+        const want = 260;
+        const dir = d > want + 40 ? 1 : (d < want - 40 ? -1 : 0);
+        e.x += (dx / d) * spd * DT * dir;
+        e.y += (dy / d) * spd * DT * dir;
+        e.shootCd -= DT;
+        if (e.shootCd <= 0) {
+          e.shootCd = 2.2;
+          const sp = 230;
+          spawnEnemyShot(e.x, e.y, (dx / d) * sp, (dy / d) * sp, e.dmg, '#c97aff', 7);
+        }
+      } else {
+        e.x += (dx / d) * spd * DT;
+        e.y += (dy / d) * spd * DT;
+        // contact damage
+        e.atkCd -= DT;
+        if (d < e.r + 16 && e.atkCd <= 0) {
+          e.atkCd = CONFIG.CONTACT_DAMAGE_CD;
+          damagePlayer(tgt, e.dmg);
+        }
+      }
+
+      // boss attack patterns
+      if (e.boss) {
+        e.shootCd -= DT;
+        if (e.shootCd <= 0) {
+          fireBossPattern(e, tgt, dx, dy, d);
+        }
       }
     }
   }
@@ -653,6 +696,59 @@ function updateEnemies(enemyGrid) {
   }
 }
 
+// Boss bullet patterns by boss id (telegraph is the brief cadence between volleys)
+function fireBossPattern(e, tgt, dx, dy, d) {
+  const baseAng = Math.atan2(dy, dx);
+  const sp = 175;
+  switch (e.bossKind) {
+    case 'batlord': {
+      const shots = 10;
+      for (let i = 0; i < shots; i++) {
+        const a = (i / shots) * Math.PI * 2 + world.time * 0.5;
+        spawnEnemyShot(e.x, e.y, Math.cos(a) * sp, Math.sin(a) * sp, e.dmg * 0.5, e.color || '#9b6fff', 7);
+      }
+      if (Math.random() < 0.5) for (let i = 0; i < 3; i++) {
+        spawnEnemy('bat', e.x + (Math.random() * 80 - 40), e.y + (Math.random() * 80 - 40), false);
+      }
+      e.shootCd = 2.6;
+      break;
+    }
+    case 'graveknight': {
+      // aimed 5-shot cone
+      for (let i = -2; i <= 2; i++) {
+        const a = baseAng + i * 0.16;
+        spawnEnemyShot(e.x, e.y, Math.cos(a) * (sp + 60), Math.sin(a) * (sp + 60), e.dmg * 0.55, e.color || '#cfd2d6', 8);
+      }
+      e.shootCd = 1.9;
+      break;
+    }
+    case 'crimson': {
+      // fast spiral
+      const shots = 6;
+      for (let i = 0; i < shots; i++) {
+        const a = (i / shots) * Math.PI * 2 + world.time * 2.2;
+        spawnEnemyShot(e.x, e.y, Math.cos(a) * (sp + 40), Math.sin(a) * (sp + 40), e.dmg * 0.45, e.color || '#ff5470', 6);
+      }
+      e.shootCd = 0.85;
+      break;
+    }
+    case 'reaper':
+    default: {
+      // dense ring + summon
+      const shots = 16;
+      for (let i = 0; i < shots; i++) {
+        const a = (i / shots) * Math.PI * 2 + world.time * 0.8;
+        spawnEnemyShot(e.x, e.y, Math.cos(a) * sp, Math.sin(a) * sp, e.dmg * 0.5, e.color || '#ff2b2b', 8);
+      }
+      if (Math.random() < 0.4) for (let i = 0; i < 4; i++) {
+        spawnEnemy(Math.random() < 0.5 ? 'wraith' : 'bat', e.x + (Math.random() * 100 - 50), e.y + (Math.random() * 100 - 50), false);
+      }
+      e.shootCd = 1.8;
+      break;
+    }
+  }
+}
+
 function damageEnemy(e, dmg, byPlayer, countCredit) {
   if (e.dead) return;
   e.hp -= dmg;
@@ -674,6 +770,23 @@ function killEnemy(e, byPlayer) {
     // also burst of gems
     for (let i = 0; i < 8; i++) dropGem(e.x + (Math.random() * 80 - 40), e.y + (Math.random() * 80 - 40), 1);
   } else {
+    // bomber: area damage to nearby players on death
+    if (e.explode) {
+      pushEvent('boom', e.x, e.y, { r: 90 });
+      for (const p of world.players.values()) {
+        if (p.dead || p.spectator || p.invuln > 0) continue;
+        const dx = p.x - e.x, dy = p.y - e.y;
+        if (dx * dx + dy * dy < 90 * 90) damagePlayer(p, e.explode);
+      }
+    }
+    // gold runner: jackpot of gems + gold drop
+    if (e.flee) {
+      pushEvent('levelup', e.x, e.y);
+      for (let i = 0; i < 14; i++) dropGem(e.x + (Math.random() * 120 - 60), e.y + (Math.random() * 120 - 60), 1);
+      dropSpecial(e.x, e.y, 'gold'); dropSpecial(e.x + 20, e.y, 'gold');
+      world.enemies.delete(e.id);
+      return;
+    }
     // gem tier by enemy xp value
     let tier = 0;
     if (e.xp >= 6) tier = 2; else if (e.xp >= 2) tier = 1;
@@ -813,13 +926,20 @@ function checkLevel(p) {
 function queueLevelUp(p) {
   const opts = buildChoices(p);
   p.pendingChoices.push(opts);
-  if (!p.activeChoice) presentChoice(p);
+  sendLevelState(p);
 }
 
-function presentChoice(p) {
-  if (p.activeChoice || !p.pendingChoices.length) return;
-  p.activeChoice = p.pendingChoices.shift();
-  send(p.sock, { t: 'lvl', opts: p.activeChoice });
+// Count of level-ups not yet consumed (the one shown + those queued behind it)
+function pendingCount(p) {
+  return (p.activeChoice ? 1 : 0) + p.pendingChoices.length;
+}
+
+// Always reflect the current banking state to the client (opts + pending badge count).
+function sendLevelState(p) {
+  if (!p.activeChoice && p.pendingChoices.length) {
+    p.activeChoice = p.pendingChoices.shift();
+  }
+  send(p.sock, { t: 'lvl', opts: p.activeChoice || null, pending: pendingCount(p) });
 }
 
 // Build 3-4 valid options. Each option has a stable id the client echoes back.
@@ -876,7 +996,7 @@ function applyChoice(p, optId) {
   }
   recomputeStats(p);
   p.activeChoice = null;
-  presentChoice(p); // show next queued level-up if any
+  sendLevelState(p); // advance to next banked level-up (or clear)
 }
 
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } }
@@ -933,7 +1053,7 @@ function updateBosses() {
       const x = clamp(anchor.x + Math.cos(a) * (CONFIG.VIEW_RADIUS - 100), 50, CONFIG.WORLD.w - 50);
       const y = clamp(anchor.y + Math.sin(a) * (CONFIG.VIEW_RADIUS - 100), 50, CONFIG.WORLD.h - 50);
       spawnEnemy(b.id, x, y, true);
-      broadcast({ t: 'boss', name: BOSSES[b.id].name });
+      broadcast({ t: 'boss', name: BOSSES[b.id].name + ' has risen!' });
     }
   }
 }
@@ -1039,14 +1159,75 @@ function gameLoop() {
   if (world.running && !world.gameOverAt) {
     spawnWave();
     updateBosses();
+    updateEvents();
   }
   updateEnemies(enemyGrid);
+  updateEnemyShots();
+  applyAllyAuras();
   for (const p of world.players.values()) fireWeapons(p, enemyGrid);
   updateProjectiles(enemyGrid);
   updatePlayers();
   updatePickups();
   tryPickupChests();
   if (world.gems.size > CONFIG.GEM_SOFT_CAP) mergeGems();
+}
+
+/* =====================================================================
+ * ENEMY PROJECTILES (bosses + ranged enemies)
+ * ===================================================================== */
+function spawnEnemyShot(x, y, vx, vy, dmg, color, r) {
+  const sid = id();
+  world.enemyShots.set(sid, { id: sid, x, y, vx, vy, dmg, color: color || '#ff5470', r: r || 7, life: 4.5 });
+}
+
+function updateEnemyShots() {
+  const W = CONFIG.WORLD;
+  for (const s of world.enemyShots.values()) {
+    s.x += s.vx * DT; s.y += s.vy * DT;
+    s.life -= DT;
+    if (s.life <= 0 || s.x < -60 || s.y < -60 || s.x > W.w + 60 || s.y > W.h + 60) {
+      world.enemyShots.delete(s.id); continue;
+    }
+    for (const p of world.players.values()) {
+      if (p.dead || p.spectator || p.invuln > 0) continue;
+      const dx = p.x - s.x, dy = p.y - s.y;
+      if (dx * dx + dy * dy < (p.r + s.r) * (p.r + s.r)) {
+        damagePlayer(p, s.dmg);
+        world.enemyShots.delete(s.id);
+        break;
+      }
+    }
+  }
+}
+
+// Cleric-style support: players flagged with _allyAura heal nearby living allies.
+function applyAllyAuras() {
+  for (const p of world.players.values()) {
+    if (!p._allyAura || p.dead || p.spectator) continue;
+    for (const a of world.players.values()) {
+      if (a === p || a.dead || a.spectator) continue;
+      const dx = a.x - p.x, dy = a.y - p.y;
+      if (dx * dx + dy * dy < 220 * 220) {
+        a.hp = Math.min(a.maxHp, a.hp + 4 * DT);
+      }
+    }
+  }
+}
+
+// Special timed events (treasure runner that flees and drops a jackpot)
+function updateEvents() {
+  world.eventCd -= DT;
+  if (world.eventCd <= 0) {
+    world.eventCd = 55 + Math.random() * 35;
+    const ap = alivePlayers();
+    if (!ap.length) return;
+    const anchor = ap[(Math.random() * ap.length) | 0];
+    const a = Math.random() * Math.PI * 2;
+    const x = clamp(anchor.x + Math.cos(a) * 260, 40, CONFIG.WORLD.w - 40);
+    const y = clamp(anchor.y + Math.sin(a) * 260, 40, CONFIG.WORLD.h - 40);
+    spawnEnemy('runner', x, y, false);
+    broadcast({ t: 'boss', name: 'Gold Runner appeared — catch it!' });
+  }
 }
 
 /* =====================================================================
@@ -1084,17 +1265,24 @@ function snapshotFor(p) {
     }
   }
 
-  // enemies
+  // enemies (bosses always included so the client can draw off-screen arrows)
   const enemies = [];
   for (const e of world.enemies.values()) {
     if (e.dead) continue;
     const dx = e.x - ex, dy = e.y - ey;
-    if (dx * dx + dy * dy < R2) {
+    if (e.boss || dx * dx + dy * dy < R2) {
       const o = { i: e.id, x: Math.round(e.x), y: Math.round(e.y), t: e.type, f: 0 };
       if (e.boss) { o.f |= 1; o.h = Math.round(e.hp); o.H = Math.round(e.maxHp); }
       if (e.slowT > 0) o.f |= 2;
       enemies.push(o);
     }
+  }
+
+  // enemy projectiles (boss / hexer bullets)
+  const shots = [];
+  for (const s of world.enemyShots.values()) {
+    const dx = s.x - ex, dy = s.y - ey;
+    if (dx * dx + dy * dy < R2) shots.push({ i: s.id, x: Math.round(s.x), y: Math.round(s.y), c: s.color, r: s.r });
   }
 
   // gems
@@ -1111,11 +1299,10 @@ function snapshotFor(p) {
     if (dx * dx + dy * dy < R2) proj.push({ i: pr.id, x: Math.round(pr.x), y: Math.round(pr.y), w: pr.wid, a: +pr.ang.toFixed(2) });
   }
 
-  // chests
+  // chests / anvils (always included so the client can guide players to them)
   const chests = [];
   for (const c of world.chests.values()) {
-    const dx = c.x - ex, dy = c.y - ey;
-    if (dx * dx + dy * dy < R2) chests.push({ i: c.id, x: Math.round(c.x), y: Math.round(c.y) });
+    chests.push({ i: c.id, x: Math.round(c.x), y: Math.round(c.y) });
   }
 
   // events near this player
@@ -1136,8 +1323,9 @@ function snapshotFor(p) {
       w: Object.keys(p.weapons).map(wid => [wid, p.weapons[wid].lv]),
       ps: Object.keys(p.passives).map(pid => [pid, p.passives[pid].lv]),
     },
-    P: players, E: enemies, G: gems, R: proj, C: chests, X: evs,
+    P: players, E: enemies, S: shots, G: gems, R: proj, C: chests, X: evs,
     tm: Math.floor(world.time),
+    rt: CONFIG.RUN_MINUTES * 60,
     pc: alivePlayers().length,
     cap: CONFIG.MAX_PLAYERS,
     lb: buildLeaderboard(),
@@ -1203,6 +1391,7 @@ wss.on('connection', (sock) => {
         send(sock, {
           t: 'welcome', id: p.id, spectator: p.spectator,
           weapons: WEAPONS, passives: PASSIVES, chars: CHARACTERS,
+          evolutions: EVOLUTIONS,
           world: CONFIG.WORLD, view: CONFIG.VIEW_RADIUS,
           full: p.spectator,
         });
@@ -1217,6 +1406,11 @@ wss.on('connection', (sock) => {
       case 'pick': {
         const p = world.players.get(sock);
         if (p && typeof msg.id === 'string') applyChoice(p, msg.id);
+        break;
+      }
+      case 'reqlvl': {
+        const p = world.players.get(sock);
+        if (p) sendLevelState(p);
         break;
       }
       case 'ping': {
