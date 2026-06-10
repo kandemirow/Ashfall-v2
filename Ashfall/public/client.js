@@ -26,6 +26,7 @@ const ENEMY_STYLE = {
   bomber: { c: '#ff7a45', r: 16, shape: 'circle' },
   shooter:{ c: '#c97aff', r: 15, shape: 'square' },
   runner: { c: '#ffd86b', r: 14, shape: 'tri' },
+  miniboss:{ c: '#ff9bf0', r: 34, shape: 'circle', boss: true },
   batlord:    { c: '#9b6fff', r: 50, shape: 'tri',    boss: true },
   graveknight:{ c: '#cfd2d6', r: 58, shape: 'square', boss: true },
   crimson:    { c: '#ff5470', r: 54, shape: 'circle', boss: true, ghost: true },
@@ -45,6 +46,11 @@ let ws = null;
 let myId = 0, spectator = false;
 let chars = null, weaponDefs = null, passiveDefs = null, evoDefs = {};
 let viewRadius = 950, worldSize = { w: 6000, h: 6000 };
+let rerollCost = 60;
+
+// floating damage numbers + screen shake
+let dmgNums = [];
+let shake = 0;
 
 let selectedChar = null;
 let connected = false;
@@ -58,7 +64,8 @@ let inputMask = 0, lastSentMask = -1;
 let controlsActive = false;
 
 // settings
-let muted = false, lowFx = false;
+let muted = false, lowFx = false, shakeOn = true, volume = 0.6;
+function addShake(amt) { if (shakeOn) shake = Math.min(16, shake + amt); }
 
 // fps / ping
 let frames = 0, fpsTimer = 0, fps = 0;
@@ -93,7 +100,7 @@ const Sound = (() => {
     const o = a.createOscillator(), g = a.createGain();
     o.type = type || 'sine'; o.frequency.value = freq;
     if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq * slide), a.currentTime + dur);
-    g.gain.value = (vol || 0.15);
+    g.gain.value = (vol || 0.15) * volume;
     g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + dur);
     o.connect(g); g.connect(a.destination);
     o.start(); o.stop(a.currentTime + dur);
@@ -183,6 +190,7 @@ function handleMessage(m) {
       myId = m.id; spectator = m.spectator;
       chars = m.chars; weaponDefs = m.weapons; passiveDefs = m.passives;
       evoDefs = m.evolutions || {};
+      rerollCost = m.rerollCost || 60;
       viewRadius = m.view; worldSize = m.world;
       connected = true; controlsActive = !spectator;
       menuEl.classList.add('hidden'); hudEl.classList.remove('hidden');
@@ -196,19 +204,19 @@ function handleMessage(m) {
       updateLevelUI(m.opts, m.pending || 0);
       break;
     case 'died':
-      Sound.death(); deathEl.classList.remove('hidden');
+      Sound.death(); deathEl.classList.remove('hidden'); addShake(7);
       break;
     case 'revived':
       deathEl.classList.add('hidden'); toast('Revived!'); Sound.levelup();
       break;
     case 'chest':
-      Sound.chest(); toast('Chest opened — reward!');
+      Sound.chest(); toast('Anvil opened — reward!');
       break;
     case 'evo':
-      Sound.evolve(); toast('EVOLUTION: ' + m.name);
+      Sound.evolve(); toast('EVOLUTION: ' + m.name); addShake(6);
       break;
     case 'boss':
-      toast('⚔ ' + m.name);
+      toast('⚔ ' + m.name); addShake(5);
       break;
     case 'over':
       showGameOver(m.reason);
@@ -247,15 +255,34 @@ function onSnapshot(s) {
 function spawnEffect(e) {
   switch (e.k) {
     case 'slash': effects.push({ k: 'slash', x: e.x, y: e.y, r: e.r, evo: e.e, t: 0, life: 0.22 }); break;
-    case 'boom':  effects.push({ k: 'ring', x: e.x, y: e.y, r: e.r, c: '#ff7a45', t: 0, life: 0.35 }); burst(e.x, e.y, 10, '#ff7a45'); Sound.hit(); break;
+    case 'boom':  effects.push({ k: 'ring', x: e.x, y: e.y, r: e.r, c: '#ff7a45', t: 0, life: 0.35 }); burst(e.x, e.y, 10, '#ff7a45'); Sound.hit(); if (nearMe(e.x, e.y, 360)) addShake(4); break;
     case 'pulse': effects.push({ k: 'ring', x: e.x, y: e.y, r: e.r, c: '#ffe6b3', t: 0, life: 0.3 }); break;
     case 'frost': effects.push({ k: 'ring', x: e.x, y: e.y, r: e.r, c: '#9fd0ff', t: 0, life: 0.3 }); break;
     case 'levelup': burst(e.x, e.y, 18, '#e8c873'); effects.push({ k: 'ring', x: e.x, y: e.y, r: 60, c: '#e8c873', t: 0, life: 0.5 }); break;
     case 'evolve': burst(e.x, e.y, 30, '#b98cff'); effects.push({ k: 'ring', x: e.x, y: e.y, r: 90, c: '#b98cff', t: 0, life: 0.7 }); break;
-    case 'death': if (!lowFx) burst(e.x, e.y, e.b ? 24 : 5, e.p ? '#d63a4f' : '#9a86b4'); if (e.b) Sound.death(); break;
+    case 'death':
+      if (!lowFx) {
+        if (e.b) { // boss/big death: ring pop + heavy burst + shake
+          burst(e.x, e.y, 26, '#d63a4f');
+          effects.push({ k: 'ring', x: e.x, y: e.y, r: 70, c: '#ff7a45', t: 0, life: 0.5 });
+          if (nearMe(e.x, e.y, 700)) addShake(6);
+        } else { // normal death: small pop + quick ring
+          burst(e.x, e.y, 6, e.p ? '#d63a4f' : '#9a86b4');
+          effects.push({ k: 'ring', x: e.x, y: e.y, r: 16, c: e.p ? '#d63a4f' : '#cdbce0', t: 0, life: 0.22 });
+        }
+      }
+      if (e.b) Sound.death();
+      break;
     case 'hit':   if (e.p === 1 && nearMe(e.x, e.y, 60)) Sound.damage(); break;
     case 'chest': effects.push({ k: 'ring', x: e.x, y: e.y, r: 40, c: '#e8c873', t: 0, life: 0.5 }); break;
     case 'vacuum': effects.push({ k: 'ring', x: e.x, y: e.y, r: 1400, c: '#5fd0ff', t: 0, life: 0.5 }); break;
+    case 'dn': // floating damage number
+      if (!lowFx) {
+        dmgNums.push({ x: e.x + (Math.random() * 14 - 7), y: e.y, v: e.d, crit: e.c === 1, t: 0, life: e.c ? 0.85 : 0.6 });
+        if (dmgNums.length > 80) dmgNums.shift(); // cap for perf
+        if (e.c === 1) Sound.hit();
+      }
+      break;
   }
 }
 
@@ -344,6 +371,18 @@ $('mute-btn').onclick = (e) => { muted = !muted; e.target.classList.toggle('off'
 $('lowfx-btn').onclick = (e) => { lowFx = !lowFx; e.target.classList.toggle('off', lowFx); };
 $('lvl-bank').onclick = (e) => { e.stopPropagation(); bankLevelUp(); };
 $('lvl-reopen').onclick = (e) => { e.stopPropagation(); reopenLevelUp(); };
+$('lvl-reroll').onclick = (e) => { e.stopPropagation(); send({ t: 'reroll' }); };
+
+// settings panel
+function openSettings() { $('settings').classList.remove('hidden'); }
+function closeSettings() { $('settings').classList.add('hidden'); }
+$('gear-btn').onclick = openSettings;
+$('menu-gear').onclick = openSettings;
+$('set-close').onclick = closeSettings;
+$('set-vol').oninput = (e) => { volume = (+e.target.value) / 100; };
+$('set-mute').onchange = (e) => { muted = e.target.checked; $('mute-btn').classList.toggle('off', muted); };
+$('set-lowfx').onchange = (e) => { lowFx = e.target.checked; $('lowfx-btn').classList.toggle('off', lowFx); };
+$('set-shake').onchange = (e) => { shakeOn = e.target.checked; };
 
 /* =====================================================================
  * LEVEL UP UI
@@ -420,6 +459,14 @@ function renderLevelCards() {
   const q = $('lvl-queue');
   if (lvlPending > 1) { q.textContent = '+' + (lvlPending - 1) + ' more queued'; q.classList.remove('hidden'); }
   else q.classList.add('hidden');
+
+  // reroll button reflects cost + whether the player can afford it
+  const rr = $('lvl-reroll');
+  if (rr) {
+    const gold = (curSnap && curSnap.me) ? curSnap.me.gold : 0;
+    rr.textContent = '⟳ Reroll (' + rerollCost + ' ◈)';
+    rr.disabled = gold < rerollCost;
+  }
 
   levelupEl.classList.remove('hidden');
 }
@@ -526,7 +573,14 @@ function render(alpha, dt) {
   ctx.save();
   ctx.scale(DPR, DPR);
   const vw = window.innerWidth, vh = window.innerHeight;
-  ctx.translate(vw / 2 - camX, vh / 2 - camY);
+  // screen shake offset (decays)
+  let shx = 0, shy = 0;
+  if (shake > 0.2) {
+    shx = (Math.random() * 2 - 1) * shake;
+    shy = (Math.random() * 2 - 1) * shake;
+    shake *= Math.pow(0.001, dt); // fast decay
+  } else shake = 0;
+  ctx.translate(vw / 2 - camX + shx, vh / 2 - camY + shy);
 
   drawBackground(vw, vh);
 
@@ -544,6 +598,8 @@ function render(alpha, dt) {
   lerpEntities(prevSnap.P, curSnap.P, alpha, drawPlayer);
   // effects on top
   drawEffects(dt);
+  // floating damage numbers
+  drawDmgNums(dt);
 
   ctx.restore();
 
@@ -602,8 +658,24 @@ function drawMinimap(vw, vh, mx, my) {
   ctx.strokeStyle = 'rgba(185,140,255,0.35)'; ctx.lineWidth = 1.5;
   ctx.fillRect(x0, y0, size, size); ctx.strokeRect(x0, y0, size, size);
   const dot = (wx, wy, c, r) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x0 + wx * sx, y0 + wy * sy, r, 0, 7); ctx.fill(); };
+  // XP gems the player can currently see (tiny cyan dots)
+  if (curSnap.G) {
+    ctx.globalAlpha = 0.5;
+    const gems = curSnap.G, step = gems.length > 120 ? 2 : 1; // thin out if dense
+    for (let i = 0; i < gems.length; i += step) { const g = gems[i]; dot(g.x, g.y, g.k === 'xp' ? '#5fd0ff' : '#e8c873', 1.3); }
+    ctx.globalAlpha = 0.82;
+  }
+  // enemies the player can currently see (already culled server-side to view radius)
+  if (curSnap.E) {
+    const en = curSnap.E, step = en.length > 140 ? 2 : 1;
+    for (let i = 0; i < en.length; i += step) {
+      const e = en[i];
+      if (e.f & 1) dot(e.x, e.y, '#ff5470', 3.5);          // boss / mini-boss
+      else dot(e.x, e.y, 'rgba(220,120,140,0.7)', 1.4);    // normal enemy
+    }
+  }
+  // anvils + players on top
   if (curSnap.C) for (const c of curSnap.C) dot(c.x, c.y, '#e8c873', 3);
-  if (curSnap.E) for (const e of curSnap.E) { if (e.f & 1) dot(e.x, e.y, '#ff5470', 3.5); }
   if (curSnap.P) for (const p of curSnap.P) { if (!p.d) dot(p.x, p.y, p.i === myId ? '#fff7d8' : '#8fd6a0', p.i === myId ? 3.5 : 2.5); }
   ctx.restore();
 }
@@ -790,6 +862,29 @@ function drawEffects(dt) {
   }
 }
 
+// floating damage numbers rise and fade; crits are bigger/orange
+function drawDmgNums(dt) {
+  ctx.textAlign = 'center';
+  for (let i = dmgNums.length - 1; i >= 0; i--) {
+    const n = dmgNums[i];
+    n.t += dt;
+    if (n.t >= n.life) { dmgNums.splice(i, 1); continue; }
+    const prog = n.t / n.life;
+    const yy = n.y - prog * 26;
+    ctx.globalAlpha = 1 - prog;
+    if (n.crit) {
+      ctx.font = 'bold 20px Cinzel, serif';
+      ctx.fillStyle = '#ffd54a';
+      ctx.fillText(n.v + '!', n.x, yy);
+    } else {
+      ctx.font = 'bold 13px Inter, system-ui, sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(n.v, n.x, yy);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
 /* =====================================================================
  * HUD UPDATE
  * ===================================================================== */
@@ -809,6 +904,15 @@ function updateHud() {
   $('hud-level').textContent = me.lv;
   $('hud-kills').textContent = me.kills;
   $('hud-gold').textContent = me.gold;
+  // prominent gold counter (corner)
+  const gc = $('gold-counter'); if (gc) gc.textContent = '💰 ' + me.gold;
+  // co-op buff indicator
+  const cbEl = $('coop-buff');
+  if (cbEl) {
+    const cb = me.cb || 0;
+    if (cb > 0) { cbEl.textContent = '🤝 Co-op +' + (cb * 8) + '% dmg'; cbEl.classList.remove('hidden'); }
+    else cbEl.classList.add('hidden');
+  }
 
   const hpRatio = Math.max(0, me.hp / me.mhp);
   $('hp-fill').style.width = (hpRatio * 100) + '%';

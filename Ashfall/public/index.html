@@ -51,8 +51,12 @@
       </div>
     </div>
 
+    <div id="gold-counter">💰 0</div>
+    <div id="coop-buff" class="hidden"></div>
+
     <button id="mute-btn" class="corner-btn" title="Toggle sound">♪</button>
     <button id="lowfx-btn" class="corner-btn" title="Toggle low FX">✦</button>
+    <button id="gear-btn" class="corner-btn" title="Settings">⚙</button>
   </div>
 
   <!-- ====================== LEVEL UP (bottom dock) ====================== -->
@@ -61,6 +65,7 @@
       <div class="lvl-bar">
         <span class="lvl-head">LEVEL UP</span>
         <span id="lvl-queue" class="lvl-queue hidden"></span>
+        <button id="lvl-reroll" class="lvl-reroll">⟳ Reroll</button>
         <button id="lvl-bank" class="lvl-bank">Bank for later ▾</button>
       </div>
       <div id="lvl-cards" class="cards"></div>
@@ -113,7 +118,25 @@
           <h3>CONTROLS</h3>
           <p><b>WASD / Arrows</b> — move<br/><b>Mouse / tap</b> — menu &amp; upgrade picks<br/><b>Esc</b> — release controls<br/>Mobile: drag the on-screen stick.</p>
         </div>
+        <div>
+          <h3>🤝 FIGHT TOGETHER</h3>
+          <p>Staying close to teammates grants a <b>Co-op damage buff</b> (up to +24% with a full squad). Revive downed allies by standing near them. Grouping up is stronger — and safer — than scattering.</p>
+        </div>
       </div>
+
+      <button id="menu-gear" class="menu-settings-btn">⚙ Settings</button>
+    </div>
+  </div>
+
+  <!-- ====================== SETTINGS OVERLAY ====================== -->
+  <div id="settings" class="overlay hidden">
+    <div class="settings-panel">
+      <div class="settings-title">SETTINGS</div>
+      <label class="set-row"><span>Volume</span><input id="set-vol" type="range" min="0" max="100" value="60" /></label>
+      <label class="set-row"><span>Mute sound</span><input id="set-mute" type="checkbox" /></label>
+      <label class="set-row"><span>Low effects (better FPS)</span><input id="set-lowfx" type="checkbox" /></label>
+      <label class="set-row"><span>Screen shake</span><input id="set-shake" type="checkbox" checked /></label>
+      <button id="set-close" class="set-close-btn">Close</button>
     </div>
   </div>
 
