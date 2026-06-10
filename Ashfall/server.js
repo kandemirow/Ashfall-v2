@@ -116,7 +116,8 @@ const ENEMIES = {
   // variety types
   bomber: { name: 'Bomber',      hp: 40,  speed: 95,  r: 16, dmg: 10, xp: 2, color: '#ff7a45', explode: 36 }, // AoE on death
   shooter:{ name: 'Hexer',       hp: 34,  speed: 70,  r: 15, dmg: 8,  xp: 2, color: '#c97aff', ranged: true }, // fires slow bolts
-  runner: { name: 'Gold Runner', hp: 120, speed: 230, r: 14, dmg: 0,  xp: 3, color: '#ffd86b', flee: true }, // treasure event, flees
+  runner: { name: 'Gold Runner', hp: 120, speed: 150, r: 14, dmg: 0,  xp: 3, color: '#ffd86b', flee: true }, // treasure event, flees (slower than the 220 player base so it's catchable)
+  miniboss:{ name: 'Warband Champion', hp: 900, speed: 78, r: 34, dmg: 26, xp: 18, color: '#ff9bf0', mini: true }, // rare elite w/ its own bar
 };
 
 const BOSSES = {
@@ -152,6 +153,7 @@ const world = {
   running: false,
   gameOverAt: 0,
   eventCd: 35,            // seconds until next special event (treasure runner)
+  miniCd: 80,             // seconds until next mini-boss
 };
 
 function resetWorld() {
@@ -165,6 +167,7 @@ function resetWorld() {
   world.running = false;
   world.gameOverAt = 0;
   world.eventCd = 35;
+  world.miniCd = 80;
   for (const b of BOSS_SCHEDULE) b.done = false;
   // respawn living players fresh at center
   for (const p of world.players.values()) respawnPlayer(p);
@@ -331,7 +334,7 @@ function recomputeStats(p) {
  * ===================================================================== */
 function weaponDamage(def, lv, p) {
   const base = def.baseDmg * (1 + (lv - 1) * 0.18);
-  return base * p.might;
+  return base * p.might * (p.coopMul || 1);
 }
 function weaponInterval(def, lv, p) {
   const base = def.interval * (1 - (lv - 1) * 0.04);
@@ -384,7 +387,7 @@ function fireWeapons(p, enemyGrid) {
           if (e.dead) continue;
           const dx = e.x - ox, dy = e.y - oy;
           if (dx * dx + dy * dy < (e.r + 16) * (e.r + 16)) {
-            damageEnemy(e, dmg, p, false);
+            damageEnemy(e, dmg, p, false, 0.30);
           }
         }
       }
@@ -405,7 +408,7 @@ function fireWeapons(p, enemyGrid) {
           if (e.dead) continue;
           const dx = e.x - p.x, dy = e.y - p.y;
           if (dx * dx + dy * dy < (radius + e.r) * (radius + e.r)) {
-            damageEnemy(e, dmg, p, true, true);
+            damageEnemy(e, dmg, p, true, 0.95);
           }
         }
       }
@@ -420,7 +423,7 @@ function fireWeapons(p, enemyGrid) {
         if (e.dead) continue;
         const dx = e.x - p.x, dy = e.y - p.y;
         if (dx * dx + dy * dy < (radius + e.r) * (radius + e.r)) {
-          damageEnemy(e, dmg, p, true);
+          damageEnemy(e, dmg, p, true, 0.45);
           if (def.slow) { e.slow = def.slow; e.slowT = 1.2; }
           if (def.freeze && Math.random() < 0.25) { e.slow = 0.95; e.slowT = 1.0; }
         }
@@ -502,7 +505,7 @@ function updateProjectiles(enemyGrid) {
       if (e.dead || pr.hit.has(e.id)) continue;
       const dx = e.x - pr.x, dy = e.y - pr.y;
       if (dx * dx + dy * dy < (e.r + 10) * (e.r + 10)) {
-        damageEnemy(e, pr.dmg, owner, true, true);
+        damageEnemy(e, pr.dmg, owner, true, 0.95);
         pr.hit.add(e.id);
         if (pr.splash > 0) {
           const sp = [];
@@ -511,7 +514,7 @@ function updateProjectiles(enemyGrid) {
             const se = sp[k];
             if (se.dead || se.id === e.id) continue;
             const sdx = se.x - pr.x, sdy = se.y - pr.y;
-            if (sdx * sdx + sdy * sdy < pr.splash * pr.splash) damageEnemy(se, pr.dmg * 0.6, owner, false, true);
+            if (sdx * sdx + sdy * sdy < pr.splash * pr.splash) damageEnemy(se, pr.dmg * 0.6, owner, false, 0.7);
           }
           pushEvent('boom', pr.x, pr.y, { r: pr.splash });
         }
@@ -550,11 +553,11 @@ function spawnEnemy(type, x, y, isBoss) {
     speed: def.speed, r: def.r, dmg: def.dmg, xp: def.xp,
     target: 0, retargetCd: Math.random() * 1.5,
     atkCd: 0, slow: 0, slowT: 0, burn: 0, burnT: 0,
-    kbx: 0, kby: 0,            // knockback velocity (decays)
-    hurt: false,               // has taken damage? (controls health bar)
+    kbx: 0, kby: 0, kbCd: 0,   // knockback velocity (decays) + throttle for continuous sources
     // behavior flags
     explode: def.explode || 0,
-    ranged: !!def.ranged, flee: !!def.flee,
+    ranged: !!def.ranged, flee: !!def.flee, mini: !!def.mini,
+    hurt: !!def.mini, // mini-bosses always show their bar (others reveal on first hit)
     shootCd: isBoss ? 2.0 + Math.random() * 1.5 : (def.ranged ? 1.5 + Math.random() * 1.5 : 0),
     bossKind: isBoss ? type : null,
     dead: false,
@@ -574,7 +577,9 @@ let spawnAccum = 0;
 function spawnWave() {
   const ap = alivePlayers();
   if (!ap.length) return;
-  const { cap, rate } = enemyScaling();
+  const { cap } = enemyScaling();
+  let { rate } = enemyScaling();
+  if (bossApproaching()) rate *= 0.5; // quietly thin the swarm before a boss arrives
   if (world.enemies.size >= cap) return;
 
   spawnAccum += rate * DT;
@@ -615,6 +620,7 @@ function updateEnemies(enemyGrid) {
     // slow timer
     let spd = e.speed;
     if (e.slowT > 0) { e.slowT -= DT; spd *= (1 - e.slow); }
+    if (e.kbCd > 0) e.kbCd -= DT;
 
     // knockback impulse (decays fast) — gives hits a sense of weight
     if (e.kbx || e.kby) {
@@ -712,7 +718,7 @@ function fireBossPattern(e, tgt, dx, dy, d) {
   const sp = 175;
   switch (e.bossKind) {
     case 'batlord': {
-      const shots = 10;
+      const shots = 5;
       for (let i = 0; i < shots; i++) {
         const a = (i / shots) * Math.PI * 2 + world.time * 0.5;
         spawnEnemyShot(e.x, e.y, Math.cos(a) * sp, Math.sin(a) * sp, e.dmg * 0.5, e.color || '#9b6fff', 7);
@@ -724,9 +730,9 @@ function fireBossPattern(e, tgt, dx, dy, d) {
       break;
     }
     case 'graveknight': {
-      // aimed 5-shot cone
-      for (let i = -2; i <= 2; i++) {
-        const a = baseAng + i * 0.16;
+      // aimed 3-shot cone
+      for (let i = -1; i <= 1; i++) {
+        const a = baseAng + i * 0.20;
         spawnEnemyShot(e.x, e.y, Math.cos(a) * (sp + 60), Math.sin(a) * (sp + 60), e.dmg * 0.55, e.color || '#cfd2d6', 8);
       }
       e.shootCd = 1.9;
@@ -734,7 +740,7 @@ function fireBossPattern(e, tgt, dx, dy, d) {
     }
     case 'crimson': {
       // fast spiral
-      const shots = 6;
+      const shots = 3;
       for (let i = 0; i < shots; i++) {
         const a = (i / shots) * Math.PI * 2 + world.time * 2.2;
         spawnEnemyShot(e.x, e.y, Math.cos(a) * (sp + 40), Math.sin(a) * (sp + 40), e.dmg * 0.45, e.color || '#ff5470', 6);
@@ -745,7 +751,7 @@ function fireBossPattern(e, tgt, dx, dy, d) {
     case 'reaper':
     default: {
       // dense ring + summon
-      const shots = 16;
+      const shots = 8;
       for (let i = 0; i < shots; i++) {
         const a = (i / shots) * Math.PI * 2 + world.time * 0.8;
         spawnEnemyShot(e.x, e.y, Math.cos(a) * sp, Math.sin(a) * sp, e.dmg * 0.5, e.color || '#ff2b2b', 8);
@@ -759,20 +765,32 @@ function fireBossPattern(e, tgt, dx, dy, d) {
   }
 }
 
-function damageEnemy(e, dmg, byPlayer, countCredit, knock) {
+function damageEnemy(e, dmg, byPlayer, countCredit, knockMult) {
   if (e.dead) return;
+  knockMult = knockMult || 0;
+  // crit only on impactful (discrete) hits
+  let crit = false;
+  if (knockMult >= 1 && Math.random() < 0.12) { crit = true; dmg *= 2.1; }
   e.hp -= dmg;
   e.hurt = true; // reveal health bar from first hit until death
   if (byPlayer && countCredit) e.lastHitBy = byPlayer.id;
-  // knockback on impactful (discrete) hits; smaller enemies fly further, bosses resist
-  if (knock && byPlayer && !e.boss) {
-    const dx = e.x - byPlayer.x, dy = e.y - byPlayer.y;
-    const d = Math.hypot(dx, dy) || 1;
-    const force = 120 * (14 / e.r);   // inverse of radius -> small enemies get shoved more
-    e.kbx += (dx / d) * force;
-    e.kby += (dy / d) * force;
-    const k = Math.hypot(e.kbx, e.kby);
-    if (k > 360) { e.kbx = e.kbx / k * 360; e.kby = e.kby / k * 360; } // cap
+  // floating damage number for impactful hits
+  if (knockMult >= 1 && byPlayer) {
+    pushEvent('dn', e.x, e.y - e.r, { d: Math.max(1, Math.round(dmg)), c: crit ? 1 : 0 });
+  }
+  // knockback: discrete hits always apply; continuous (aura/orbit) are lighter + throttled
+  if (knockMult > 0 && byPlayer && !e.boss) {
+    const continuous = knockMult < 1;
+    if (!continuous || e.kbCd <= 0) {
+      const dx = e.x - byPlayer.x, dy = e.y - byPlayer.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const force = 150 * knockMult * (14 / e.r); // smaller enemies fly further
+      e.kbx += (dx / d) * force;
+      e.kby += (dy / d) * force;
+      const k = Math.hypot(e.kbx, e.kby);
+      if (k > 430) { e.kbx = e.kbx / k * 430; e.kby = e.kby / k * 430; } // cap
+      if (continuous) e.kbCd = 0.1;
+    }
   }
   if (e.hp <= 0) killEnemy(e, byPlayer);
 }
@@ -907,7 +925,7 @@ function collectPickup(p, g) {
       const grid = makeGrid();
       for (const e of world.enemies.values()) if (!e.dead) gridInsert(grid, e);
       const near = []; gridQuery(grid, p.x, p.y, 350, near);
-      for (let i = 0; i < near.length; i++) damageEnemy(near[i], 400, p, false, true);
+      for (let i = 0; i < near.length; i++) damageEnemy(near[i], 400, p, false, 1.1);
       pushEvent('boom', p.x, p.y, { r: 350 });
       break;
     }
@@ -964,6 +982,34 @@ function sendLevelState(p) {
 }
 
 // Build 3-4 valid options. Each option has a stable id the client echoes back.
+// Short Turkish effect descriptions shown on upgrade cards
+const WEAPON_BLURB = {
+  arc:   'Yakındaki düşmanları kesen yakın dövüş savurması',
+  ember: 'Düşmana atılan, isabette alan hasarı veren ateş topu',
+  arrow: 'En yakın düşmanı delip geçen hızlı ruh oku',
+  pulse: 'Etrafında periyodik kutsal patlama; ayrıca iyileştirir',
+  frost: 'Çevredeki düşmanları yavaşlatan soğuk alan',
+  bone:  'Etrafında dönerek değdiği düşmanlara vuran kemikler',
+  arc_evo:   'Çift yönlü, daha geniş ve sert yakın dövüş',
+  ember_evo: 'Daha büyük patlama + düşmanı yakan ateş',
+  arrow_evo: 'Gökten yağan, delip geçen ok yağmuru',
+  pulse_evo: 'Daha geniş kutsal alan + güçlü iyileştirme',
+  frost_evo: 'Çok geniş alan; düşmanları dondurur',
+  bone_evo:  'Daha çok ve hızlı dönen kemik fırtınası',
+};
+const PASSIVE_BLURB = {
+  iron:    'Maksimum canını artırır',
+  war:     'Tüm silah hasarını artırır',
+  lens:    'Alan/menzil etkisini büyütür',
+  quick:   'Atış aralığını kısaltır (daha sık vurur)',
+  magnet:  'XP toplama menzilini artırır',
+  scholar: 'Kazanılan XP miktarını artırır',
+  gold:    'Kazanılan altını artırır',
+  boots:   'Hareket hızını artırır',
+};
+
+const REROLL_COST = 60; // gold to reroll a level-up choice set
+
 function buildChoices(p) {
   const opts = [];
   const wKeys = Object.keys(p.weapons);
@@ -974,27 +1020,27 @@ function buildChoices(p) {
     const def = WEAPONS[wid];
     if (def.evolved) continue;
     if (p.weapons[wid].lv < 8) {
-      opts.push({ id: 'wlv:' + wid, kind: 'wup', wid, name: def.name, lv: p.weapons[wid].lv + 1, desc: 'Level ' + (p.weapons[wid].lv + 1) });
+      opts.push({ id: 'wlv:' + wid, kind: 'wup', wid, name: def.name, lv: p.weapons[wid].lv + 1, desc: 'Sv ' + (p.weapons[wid].lv + 1) + ' · ' + (WEAPON_BLURB[wid] || '') });
     }
   }
   // new weapons
   if (wKeys.length < 6) {
     for (const wid in WEAPONS) {
       if (WEAPONS[wid].evolved) continue;
-      if (!p.weapons[wid]) opts.push({ id: 'wnew:' + wid, kind: 'wnew', wid, name: WEAPONS[wid].name, lv: 1, desc: 'New weapon' });
+      if (!p.weapons[wid]) opts.push({ id: 'wnew:' + wid, kind: 'wnew', wid, name: WEAPONS[wid].name, lv: 1, desc: 'Yeni silah · ' + (WEAPON_BLURB[wid] || '') });
     }
   }
   // upgrade passives
   for (const pid of pKeys) {
-    if (p.passives[pid].lv < 5) opts.push({ id: 'plv:' + pid, kind: 'pup', pid, name: PASSIVES[pid].name, lv: p.passives[pid].lv + 1, desc: 'Level ' + (p.passives[pid].lv + 1) });
+    if (p.passives[pid].lv < 5) opts.push({ id: 'plv:' + pid, kind: 'pup', pid, name: PASSIVES[pid].name, lv: p.passives[pid].lv + 1, desc: 'Sv ' + (p.passives[pid].lv + 1) + ' · ' + (PASSIVE_BLURB[pid] || '') });
   }
   // new passives
   if (pKeys.length < 6) {
-    for (const pid in PASSIVES) if (!p.passives[pid]) opts.push({ id: 'pnew:' + pid, kind: 'pnew', pid, name: PASSIVES[pid].name, lv: 1, desc: 'New passive' });
+    for (const pid in PASSIVES) if (!p.passives[pid]) opts.push({ id: 'pnew:' + pid, kind: 'pnew', pid, name: PASSIVES[pid].name, lv: 1, desc: 'Yeni pasif · ' + (PASSIVE_BLURB[pid] || '') });
   }
   // always-available fallback rewards
-  opts.push({ id: 'gold', kind: 'gold', name: 'Gold Cache', lv: 0, desc: '+100 gold' });
-  opts.push({ id: 'heal', kind: 'heal', name: 'Healing Light', lv: 0, desc: 'Restore 40% HP' });
+  opts.push({ id: 'gold', kind: 'gold', name: 'Gold Cache', lv: 0, desc: '+100 altın' });
+  opts.push({ id: 'heal', kind: 'heal', name: 'Healing Light', lv: 0, desc: 'Canının %40\u0027ını yeniler' });
 
   // shuffle and take up to 4
   shuffle(opts);
@@ -1062,19 +1108,37 @@ function openChest(p) {
 /* =====================================================================
  * BOSS SCHEDULING
  * ===================================================================== */
+function bossAlive() {
+  for (const e of world.enemies.values()) if (e.boss && !e.dead) return true;
+  return false;
+}
+
+// True if the next scheduled boss is due within 45s (used to thin the swarm beforehand)
+function bossApproaching() {
+  const runSec = CONFIG.RUN_MINUTES * 60;
+  for (const b of BOSS_SCHEDULE) {
+    if (b.done) continue;
+    const t = b.f * runSec - world.time;
+    return t > 0 && t <= 45;
+  }
+  return false;
+}
+
 function updateBosses() {
+  if (bossAlive()) return; // never spawn a new boss while one is still alive
   const frac = world.time / (CONFIG.RUN_MINUTES * 60);
   for (const b of BOSS_SCHEDULE) {
     if (!b.done && frac >= b.f) {
       b.done = true;
       const ap = alivePlayers();
-      if (!ap.length) continue;
+      if (!ap.length) { b.done = false; return; } // wait for someone alive
       const anchor = ap[(Math.random() * ap.length) | 0];
       const a = Math.random() * Math.PI * 2;
       const x = clamp(anchor.x + Math.cos(a) * (CONFIG.VIEW_RADIUS - 100), 50, CONFIG.WORLD.w - 50);
       const y = clamp(anchor.y + Math.sin(a) * (CONFIG.VIEW_RADIUS - 100), 50, CONFIG.WORLD.h - 50);
       spawnEnemy(b.id, x, y, true);
       broadcast({ t: 'boss', name: BOSSES[b.id].name + ' has risen!' });
+      return; // only one boss at a time
     }
   }
 }
@@ -1185,6 +1249,7 @@ function gameLoop() {
   updateEnemies(enemyGrid);
   updateEnemyShots();
   applyAllyAuras();
+  applyCoopBuff();
   for (const p of world.players.values()) fireWeapons(p, enemyGrid);
   updateProjectiles(enemyGrid);
   updatePlayers();
@@ -1235,20 +1300,59 @@ function applyAllyAuras() {
   }
 }
 
-// Special timed events (treasure runner that flees and drops a jackpot)
+// Co-op buff: standing near living allies grants bonus damage (and a little move speed).
+// p.coopAllies = nearby allies (0..3), p.coopMul applied to weapon damage.
+function applyCoopBuff() {
+  const RANGE2 = 360 * 360;
+  for (const p of world.players.values()) {
+    if (p.dead || p.spectator) { p.coopAllies = 0; p.coopMul = 1; continue; }
+    let n = 0;
+    for (const a of world.players.values()) {
+      if (a === p || a.dead || a.spectator) continue;
+      const dx = a.x - p.x, dy = a.y - p.y;
+      if (dx * dx + dy * dy < RANGE2) n++;
+    }
+    n = Math.min(3, n);
+    p.coopAllies = n;
+    p.coopMul = 1 + 0.08 * n; // up to +24% damage in a group of 4
+  }
+}
+
+// Special timed events (treasure runner + occasional mini-boss)
 function updateEvents() {
+  const ap = alivePlayers();
+  // treasure runner
   world.eventCd -= DT;
   if (world.eventCd <= 0) {
     world.eventCd = 55 + Math.random() * 35;
-    const ap = alivePlayers();
-    if (!ap.length) return;
-    const anchor = ap[(Math.random() * ap.length) | 0];
-    const a = Math.random() * Math.PI * 2;
-    const x = clamp(anchor.x + Math.cos(a) * 260, 40, CONFIG.WORLD.w - 40);
-    const y = clamp(anchor.y + Math.sin(a) * 260, 40, CONFIG.WORLD.h - 40);
-    spawnEnemy('runner', x, y, false);
-    broadcast({ t: 'boss', name: 'Gold Runner appeared — catch it!' });
+    if (ap.length) {
+      const anchor = ap[(Math.random() * ap.length) | 0];
+      const a = Math.random() * Math.PI * 2;
+      const x = clamp(anchor.x + Math.cos(a) * 260, 40, CONFIG.WORLD.w - 40);
+      const y = clamp(anchor.y + Math.sin(a) * 260, 40, CONFIG.WORLD.h - 40);
+      spawnEnemy('runner', x, y, false);
+      broadcast({ t: 'boss', name: 'Gold Runner appeared — catch it!' });
+    }
   }
+  // mini-boss (rare, never while a real boss is up, only one at a time)
+  world.miniCd -= DT;
+  if (world.miniCd <= 0) {
+    world.miniCd = 110 + Math.random() * 60;
+    if (ap.length && world.time > 90 && !bossAlive() && !miniAlive()) {
+      const anchor = ap[(Math.random() * ap.length) | 0];
+      const a = Math.random() * Math.PI * 2;
+      const dist = CONFIG.VIEW_RADIUS + 60;
+      const x = clamp(anchor.x + Math.cos(a) * dist, 40, CONFIG.WORLD.w - 40);
+      const y = clamp(anchor.y + Math.sin(a) * dist, 40, CONFIG.WORLD.h - 40);
+      spawnEnemy('miniboss', x, y, false);
+      broadcast({ t: 'boss', name: 'A Warband Champion stalks the field' });
+    }
+  }
+}
+
+function miniAlive() {
+  for (const e of world.enemies.values()) if (e.mini && !e.dead) return true;
+  return false;
 }
 
 /* =====================================================================
@@ -1342,6 +1446,7 @@ function snapshotFor(p) {
       xp: Math.round(p.xp), nx: p.nextXp, gold: p.gold, kills: p.kills,
       dead: p.dead ? 1 : 0, spec: p.spectator ? 1 : 0,
       rev: p.revivesLeft, rp: +(p.reviveProgress / CONFIG.REVIVE_TIME).toFixed(2),
+      cb: p.coopAllies || 0,
       w: Object.keys(p.weapons).map(wid => [wid, p.weapons[wid].lv]),
       ps: Object.keys(p.passives).map(pid => [pid, p.passives[pid].lv]),
     },
@@ -1415,6 +1520,7 @@ wss.on('connection', (sock) => {
           weapons: WEAPONS, passives: PASSIVES, chars: CHARACTERS,
           evolutions: EVOLUTIONS,
           world: CONFIG.WORLD, view: CONFIG.VIEW_RADIUS,
+          rerollCost: REROLL_COST,
           full: p.spectator,
         });
         world.running = true;
@@ -1433,6 +1539,15 @@ wss.on('connection', (sock) => {
       case 'reqlvl': {
         const p = world.players.get(sock);
         if (p) sendLevelState(p);
+        break;
+      }
+      case 'reroll': {
+        const p = world.players.get(sock);
+        if (p && p.activeChoice && p.gold >= REROLL_COST) {
+          p.gold -= REROLL_COST;
+          p.activeChoice = buildChoices(p);
+          sendLevelState(p);
+        }
         break;
       }
       case 'ping': {
